@@ -1,0 +1,26 @@
+# Visual Studio 프로젝트 파일 무시
+*.vcxproj*
+.vs/
+x64/
+*.sln
+
+#빌드 결과
+Debug/
+Release/
+
+# 빌드 산출물 무시
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+*.idb
+*.ilk
+*.log
+
+# objects
+*.o
+*.out
+
+
+
