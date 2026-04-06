@@ -13,6 +13,7 @@ public:
 	bool ApplyBlur(RAWImageBuf_s*& ioBuf);
 	bool ApplyEqualize(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
 	bool ApplyColorMap(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
+	bool ApplyLaplacian(RAWImageBuf_s*& ioBuf);
 
 	void CloseCudaHandles(void);
 

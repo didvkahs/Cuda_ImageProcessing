@@ -25,12 +25,23 @@ ImageProcessor::~ImageProcessor(void) {};
 bool ImageProcessor::Initialize(D3DResources& resource)
 {
 	m_ImgB = new RAWImageBuf_s;
+	m_tempB = new RAWImageBuf_s;
 
 	if (!Bmp::LoadRGBs(*m_ImgB))
 	{
 		fprintf(stderr, "LoadRGBs failed with error \n");
 		goto LB_FAILED_LOAD_RGB;
 	}
+
+	{
+		const uint32_t BUFSIZE = m_ImgB->imgH * m_ImgB->imgW;
+		m_tempB->imgH = m_ImgB->imgH;
+		m_tempB->imgW = m_ImgB->imgW;
+		m_tempB->r = new uint8_t[BUFSIZE];
+		m_tempB->g = new uint8_t[BUFSIZE];
+		m_tempB->b = new uint8_t[BUFSIZE];
+	}
+
 
 	m_histoArr= new uint32_t[MAX_PIXEL_VALUE];
 	memset(m_histoArr, 0, ImageProcessor_SIZE);
@@ -45,45 +56,36 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 	
 	m_Resource = resource;
 
-	if (!m_cuprocess->ComputeHistogram(m_ImgB, m_histoArr))
+	if (!createHistogramSRV())
 	{
-		fprintf(stderr, "computeHistogram failed with error \n");
-		goto LB_FAILED_COMPUTE_HISTOGRAM;
+		fprintf(stderr, "createHistogramSRV failed\n");
+		goto LB_FAILED_CREATE_HISTOGRAM;
 	}
-	createSRV(nullptr, m_histoArr, VS_HISTOGRAM);
-	m_Resource.AddVertexShader(L"HistogramShader.fx", "vsMain", m_vsIDs[VS_HISTOGRAM], m_vsBlob);
-	m_Resource.AddPixelShader(L"HistogramShader.fx", "psMain", m_psIDs[PS_HISTOGRAM]);
-	m_vsBlob->Release();
 
-	/*if (m_cuprocess->ApplyBlur(m_ImgB))
+	if (!createEqualizedSRV())
 	{
-		fprintf(stderr, "ApplyBlur failed with error\n");
-		goto LB_FAILED_APPLY_BLUR;
+		fprintf(stderr, "createEqualizedSRV failed\n");
+		goto LB_FAILED_CREATE_EQUALIZED;
 	}
-	createSRV(m_ImgB, nullptr, VS_BLUR);
 
-	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_BLUR], m_vsBlob);
-	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_BLUR]);*/
-
-	if (!m_cuprocess->ApplyEqualize(m_ImgB, m_histoArr))
+	if (!createAVGBlurSRV())
 	{
-		fprintf(stderr, "ApplyEqualize failed with error\n");
-		goto LB_FAILED_APPLY_EQUALIZE;
+		fprintf(stderr, "createAVGBlurSRV failed\n");
+		goto LB_FAILED_CREATE_AVGBLUR;
 	}
-	createSRV(m_ImgB, nullptr, VS_EQUALIZE);
-	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_EQUALIZE], m_vsBlob);
-	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_EQUALIZE]);
-	m_vsBlob->Release();
 
-
-	if (!m_cuprocess->ApplyColorMap(m_ImgB, m_histoArr))
+	if (!createColorMapSRV())
 	{
-		fprintf(stderr, "ApplyColorMap failed with error\n");
-		goto LB_FAILED_APPLY_COLORMAP;
+		fprintf(stderr, "craeteColorMapSRV failed\n");
+		goto LB_FAILED_CREATE_COLORMAP;
 	}
-	createSRV(m_ImgB, nullptr, VS_COLOR_MAP);
-	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_COLOR_MAP], m_vsBlob);
-	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_COLOR_MAP]);
+
+	if (!createLaplacianSRV())
+	{
+		fprintf(stderr, "createLaplacianSRV failed\n");
+		goto LB_FAILED_CREATE_LAPLACIAN;
+	}
+
 
 	{
 		D3D11_INPUT_ELEMENT_DESC layout[] =
@@ -99,19 +101,32 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 
 	return true;
 
-	LB_FAILED_APPLY_COLORMAP:
+	LB_FAILED_CREATE_LAPLACIAN:
+	SAFE_RELEASE(m_SRVs[VS_COLOR_MAP])
+
+	LB_FAILED_CREATE_COLORMAP:
+	SAFE_RELEASE(m_SRVs[VS_BLUR])
+
+	LB_FAILED_CREATE_AVGBLUR:
 	SAFE_RELEASE(m_SRVs[VS_EQUALIZE])
 
-	LB_FAILED_APPLY_EQUALIZE:
-
-	LB_FAILED_APPLY_BLUR:
+    LB_FAILED_CREATE_EQUALIZED :
 	SAFE_RELEASE(m_SRVs[VS_HISTOGRAM])
 
-	LB_FAILED_COMPUTE_HISTOGRAM:
+	LB_FAILED_CREATE_HISTOGRAM:
 	m_cuprocess->CloseCudaHandles();
 	m_cuprocess = nullptr;
 
-	LB_FAILED_CUDA_INITIALIZE:
+    LB_FAILED_CUDA_INITIALIZE:
+	delete[] m_tempB->r;
+	m_tempB->r = nullptr;
+	delete[] m_tempB->g;
+	m_tempB->g = nullptr;
+	delete[] m_tempB->b;
+	m_tempB->b = nullptr;
+	delete m_tempB;
+	m_tempB = nullptr;
+
 	delete[] m_histoArr;
 	m_histoArr = nullptr;
 	free(m_ImgB->r);
@@ -141,20 +156,6 @@ void ImageProcessor::SetPSID(const PixelShaderID_e id)
 {
 	m_currPSID = id;
 }
-
-//void ImageProcessor::ProcessImage(void)
-//{	
-//	if (!m_cuprocess->ComputeHistogram(m_ImgB, m_histoArr))
-//	{
-//		fprintf(stderr, "ImageProcessor caculation failed\n");
-//		return;
-//	}
-//	if (!applyEqualization())
-//	{
-//		fprintf(stderr, "applying equalization failed \n");
-//		return;
-//	}
-//}
 
 void ImageProcessor::SetupD3D(void)
 {
@@ -225,6 +226,105 @@ void ImageProcessor::CloseImgProcessHandles(void)
 
 	m_cuprocess->CloseCudaHandles();
 }
+
+
+
+
+
+
+bool ImageProcessor::createHistogramSRV(void)
+{
+	if (!m_cuprocess->ComputeHistogram(m_ImgB, m_histoArr))
+	{
+		return false;
+	}
+	createSRV(nullptr, m_histoArr, VS_HISTOGRAM);
+	m_Resource.AddVertexShader(L"HistogramShader.fx", "vsMain", m_vsIDs[VS_HISTOGRAM], m_vsBlob);
+	m_Resource.AddPixelShader(L"HistogramShader.fx", "psMain", m_psIDs[PS_HISTOGRAM]);
+
+	return true;
+}
+
+bool ImageProcessor::createEqualizedSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+
+	if (!m_cuprocess->ApplyEqualize(m_ImgB, m_histoArr))
+	{
+		return false;
+	}
+	createSRV(m_ImgB, nullptr, VS_EQUALIZE);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_EQUALIZE], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_EQUALIZE]);
+	
+	vsBlob->Release();
+	return true;
+}
+
+bool ImageProcessor::createAVGBlurSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+
+	memcpy(m_tempB->r, m_ImgB->r, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->g, m_ImgB->g, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->b, m_ImgB->b, BUFSIZE * sizeof(uint8_t));
+
+	if (!m_cuprocess->ApplyBlur(m_tempB))
+	{
+		return false;
+	}
+	createSRV(m_tempB, nullptr, VS_BLUR);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_BLUR], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_BLUR]);
+
+	vsBlob->Release();
+	return true;
+}
+
+bool ImageProcessor::createColorMapSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+
+	memcpy(m_tempB->r, m_ImgB->r, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->g, m_ImgB->g, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->b, m_ImgB->b, BUFSIZE * sizeof(uint8_t));
+
+	if (!m_cuprocess->ApplyColorMap(m_tempB, m_histoArr))
+	{
+		return false;
+	}
+	createSRV(m_tempB, nullptr, VS_COLOR_MAP);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_COLOR_MAP], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_COLOR_MAP]);
+
+	return true;
+}
+
+bool ImageProcessor::createLaplacianSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+
+	memcpy(m_tempB->r, m_ImgB->r, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->g, m_ImgB->g, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->b, m_ImgB->b, BUFSIZE * sizeof(uint8_t));
+
+	if (!m_cuprocess->ApplyLaplacian(m_tempB))
+	{
+		return false;
+	}
+	createSRV(m_tempB, nullptr, VS_LAPLACIAN);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_LAPLACIAN], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_LAPLACIAN]);
+
+	return true;
+}
+
+
+
+
 
 
 

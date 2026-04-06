@@ -11,6 +11,8 @@
 #include <cmath>
 #include <random>
 
+
+
 #define SAFE_RELEASE(p) {if(p != nullptr){ cudaFree(p); p = nullptr;}}
 
 constexpr int CU_IMG_W = 1024;
@@ -25,10 +27,14 @@ constexpr float THRESHOLD = 0.15f;
 inline bool CudaCheck(cudaError_t err);
 inline bool CudaKernelCheck(void);
 
+__constant__ uint32_t KC_WARP_SIZE = 32;
+__constant__ uint32_t KC_MASK = 0xffffffff; // indicates that all 32 threads in the warp participate
+
 __global__ void histogram(uint32_t* histogramVal, uint8_t* buf, size_t m_pitch, uint32_t width, uint32_t height);
 __global__ void horizontalBlur(uint8_t* dstBuf, const uint8_t* srcBuf, size_t pitch, int width, int height);
 __global__ void verticalBlur(uint8_t* dstBuf, const uint8_t* srcBuf, size_t pitch, int width, int height);
 __global__ void replaceWithHisto(uint32_t* histo, uint8_t* ioBuf, size_t pitch, uint32_t width, uint32_t height);
+__global__ void laplacian(uint8_t* dstBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
 
 
 CudaProcessor::CudaProcessor(void) {}
@@ -391,6 +397,70 @@ LB_FAILED_MEMCPY_HTOD:
 }
 
 
+bool CudaProcessor::ApplyLaplacian(RAWImageBuf_s*& ioBuf)
+{
+	resetDevBufs();
+
+	m_imgW = ioBuf->imgW;
+	m_imgH = ioBuf->imgH;
+
+	if (!CudaCheck(cudaMemcpy2D(m_dr, m_pitch, ioBuf->r, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
+	{
+		goto LB_FAILED_MEMCPY_HTOD;
+	}
+	if (!CudaCheck(cudaMemcpy2D(m_dg, m_pitch, ioBuf->g, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
+	{
+		goto LB_FAILED_MEMCPY_HTOD;
+	}
+	if (!CudaCheck(cudaMemcpy2D(m_db, m_pitch, ioBuf->b, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
+	{
+		goto LB_FAILED_MEMCPY_HTOD;
+	}
+
+	{
+		dim3 block(BLOCK, BLOCK);
+		dim3 grid((m_imgW + BLOCK - 1) / BLOCK, (m_imgH + BLOCK - 1) / BLOCK);
+
+		laplacian<<<grid, block>>>(m_dr2, m_dr, m_pitch, m_imgW, m_imgH);
+		laplacian<<<grid, block>>>(m_dg2, m_dg, m_pitch, m_imgW, m_imgH);
+		laplacian<<<grid, block>>>(m_db2, m_db, m_pitch, m_imgW, m_imgH);
+
+		if (!CudaKernelCheck())
+		{
+			fprintf(stderr, "apply laplacian kernel failed\n");
+			goto LB_FAILED_KERNEL;
+		}
+	}
+
+	
+	if (!CudaCheck(cudaMemcpy2D(ioBuf->r, sizeof(uint8_t) * m_imgW, m_dr2, m_pitch, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyDeviceToHost)))
+	{
+		goto LB_FAILED_MEMCPY_DTOH;
+	}
+	if (!CudaCheck(cudaMemcpy2D(ioBuf->g, sizeof(uint8_t) * m_imgW, m_dg2, m_pitch, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyDeviceToHost)))
+	{
+		goto LB_FAILED_MEMCPY_DTOH;
+	}
+	if (!CudaCheck(cudaMemcpy2D(ioBuf->b, sizeof(uint8_t) * m_imgW, m_db2, m_pitch, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyDeviceToHost)))
+	{
+		goto LB_FAILED_MEMCPY_DTOH;
+	}
+
+
+
+	return true;
+
+LB_FAILED_MEMCPY_DTOH:
+
+LB_FAILED_KERNEL:
+
+LB_FAILED_MEMCPY_HTOD:
+
+	return false;
+}
+
+
+
 
 void CudaProcessor::CloseCudaHandles(void)
 {
@@ -613,6 +683,42 @@ __global__ void replaceWithHisto(uint32_t* histogramVal, uint8_t* buf, size_t pi
 	uint8_t equalizedVal = histogramVal[pixelVal];
 
 	buf[srcX + pitch * srcY] = equalizedVal;
+}
+
+__global__ void laplacian(uint8_t* dstBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height)
+{
+	const uint32_t srcX = blockIdx.x * blockDim.x + threadIdx.x;
+	const uint32_t srcY = blockIdx.y * blockDim.y + threadIdx.y;
+	const uint32_t tx = threadIdx.x;
+	const uint32_t ty = threadIdx.y;
+
+	if (srcX >= width || srcY >= height) return;
+
+	uint8_t center = srcBuf[srcX + pitch * srcY];
+
+	uint8_t lp_shfl = __shfl_up_sync(KC_MASK, center, 1);
+	uint8_t rp_shfl = __shfl_down_sync(KC_MASK, center, 1);
+
+	uint8_t lp, rp;
+
+	if (tx == 0)
+		lp = srcBuf[max((int)srcX - 1, 0) + pitch * srcY];
+	else
+		lp = lp_shfl;
+
+	if (tx == BLOCK - 1 || srcX == width - 1)
+		rp = srcBuf[min((int)srcX + 1, (int)width - 1) + pitch * srcY];
+	else
+		rp = rp_shfl;
+
+	uint32_t upY = min(max(srcY - 1, 0), height - 1);
+	uint32_t downY = min(max(srcY + 1, 0), height + 1);
+
+	uint8_t up = srcBuf[srcX + pitch * upY];
+	uint8_t dp = srcBuf[srcX + pitch * downY];
+
+	int res = (int)lp + (int)rp + (int)up + (int)dp - 4 * (int)center;
+	dstBuf[srcX + pitch * srcY] = (uint8_t)max(0, min(255, res));
 }
 
 

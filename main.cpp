@@ -260,6 +260,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             imageProcess.SetVSID(VS_COLOR_MAP);
             imageProcess.SetPSID(PS_COLOR_MAP);
             break;
+        case'l':
+        case'L':
+            imageProcess.SetVSID(VS_LAPLACIAN);
+            imageProcess.SetPSID(PS_LAPLACIAN);
+            break;
         }
 
     default:

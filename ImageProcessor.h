@@ -12,6 +12,7 @@ enum PixelShaderID_e
 	PS_BLUR,
 	PS_EQUALIZE,
 	PS_COLOR_MAP,
+	PS_LAPLACIAN,
 	PS_SHADER_COUNT,
 	PS_NON
 };
@@ -22,6 +23,7 @@ enum VertexShaderID_e
 	VS_BLUR,
 	VS_EQUALIZE,
 	VS_COLOR_MAP,
+	VS_LAPLACIAN,
 	VS_SHADER_COUNT,
 	VS_NON
 };
@@ -54,7 +56,12 @@ private:
 
 private:
 
-	//void processImage(VertexShaderID_e);
+	bool createHistogramSRV(void);
+	bool createEqualizedSRV(void);
+	bool createAVGBlurSRV(void);
+	bool createColorMapSRV(void);
+	bool createLaplacianSRV(void);
+
 
 	void createSRV(const RAWImageBuf_s* img, uint32_t* histoArr, VertexShaderID_e vsID);
 	void createD3DBuffer(void);
@@ -81,4 +88,5 @@ private:
 
 	uint32_t* m_histoArr = nullptr;
 	RAWImageBuf_s* m_ImgB;
+	RAWImageBuf_s* m_tempB;
 };
