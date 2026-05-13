@@ -1,6 +1,3 @@
-#include <cuda_runtime.h>
-#include <device_launch_parameters.h>
-
 #include <cstdint>
 #include "D3DResources.h"
 
@@ -8,7 +5,6 @@
 #include "BmpReader.h"
 
 #include "CudaProcessor.h"
-
 #include "ImageProcessor.h"
 #include <iostream>
 
@@ -68,6 +64,12 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 		goto LB_FAILED_CREATE_EQUALIZED;
 	}
 
+	if (!createFuzzyContrastSRV())
+	{
+		fprintf(stderr, "createFuzzyContrastSRV failed\n");
+		goto LB_FAILED_FUZZY_CONTRAST;
+	}
+
 	if (!createAVGBlurSRV())
 	{
 		fprintf(stderr, "createAVGBlurSRV failed\n");
@@ -80,12 +82,17 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 		goto LB_FAILED_CREATE_COLORMAP;
 	}
 
+	if (!createMultiFuzzyContrastSRV())
+	{
+		fprintf(stderr, "createMultiFuzzyContrast failed\n");
+		goto LB_FAILED_CREATE_MULTI_FUZZY_CONTRAST;
+	}
+
 	if (!createLaplacianSRV())
 	{
 		fprintf(stderr, "createLaplacianSRV failed\n");
 		goto LB_FAILED_CREATE_LAPLACIAN;
 	}
-
 
 	{
 		D3D11_INPUT_ELEMENT_DESC layout[] =
@@ -102,15 +109,21 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 	return true;
 
 	LB_FAILED_CREATE_LAPLACIAN:
+	SAFE_RELEASE(m_SRVs[VS_MULTI_FUZZY])
+
+	LB_FAILED_CREATE_MULTI_FUZZY_CONTRAST:
 	SAFE_RELEASE(m_SRVs[VS_COLOR_MAP])
 
 	LB_FAILED_CREATE_COLORMAP:
 	SAFE_RELEASE(m_SRVs[VS_BLUR])
 
 	LB_FAILED_CREATE_AVGBLUR:
+	SAFE_RELEASE(m_SRVs[VS_FUZZY_CONTRAST])
+
+	LB_FAILED_FUZZY_CONTRAST :
 	SAFE_RELEASE(m_SRVs[VS_EQUALIZE])
 
-    LB_FAILED_CREATE_EQUALIZED :
+	LB_FAILED_CREATE_EQUALIZED :
 	SAFE_RELEASE(m_SRVs[VS_HISTOGRAM])
 
 	LB_FAILED_CREATE_HISTOGRAM:
@@ -127,6 +140,8 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 	delete m_tempB;
 	m_tempB = nullptr;
 
+
+	delete[] m_rgbHisto;
 	delete[] m_histoArr;
 	m_histoArr = nullptr;
 	free(m_ImgB->r);
@@ -234,10 +249,8 @@ void ImageProcessor::CloseImgProcessHandles(void)
 
 bool ImageProcessor::createHistogramSRV(void)
 {
-	if (!m_cuprocess->ComputeHistogram(m_ImgB, m_histoArr))
-	{
-		return false;
-	}
+	computeHistogram();
+
 	createSRV(nullptr, m_histoArr, VS_HISTOGRAM);
 	m_Resource.AddVertexShader(L"HistogramShader.fx", "vsMain", m_vsIDs[VS_HISTOGRAM], m_vsBlob);
 	m_Resource.AddPixelShader(L"HistogramShader.fx", "psMain", m_psIDs[PS_HISTOGRAM]);
@@ -249,14 +262,35 @@ bool ImageProcessor::createEqualizedSRV(void)
 {
 	ID3DBlob* vsBlob = nullptr;
 
-	if (!m_cuprocess->ApplyEqualize(m_ImgB, m_histoArr))
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+	memcpy(m_tempB->r, m_ImgB->r, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->g, m_ImgB->g, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->b, m_ImgB->b, BUFSIZE * sizeof(uint8_t));
+
+	if (!m_cuprocess->ApplyEqualize(m_tempB, m_histoArr))
 	{
 		return false;
 	}
-	createSRV(m_ImgB, nullptr, VS_EQUALIZE);
+	createSRV(m_tempB, nullptr, VS_EQUALIZE);
 	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_EQUALIZE], vsBlob);
 	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_EQUALIZE]);
 	
+	vsBlob->Release();
+	return true;
+}
+
+bool ImageProcessor::createFuzzyContrastSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	
+	if (!m_cuprocess->ApplyFuzzyContrast(m_ImgB, m_histoArr))
+	{
+		return false;
+	}
+	createSRV(m_ImgB, nullptr, VS_FUZZY_CONTRAST);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_FUZZY_CONTRAST], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_FUZZY_CONTRAST]);
+
 	vsBlob->Release();
 	return true;
 }
@@ -302,6 +336,28 @@ bool ImageProcessor::createColorMapSRV(void)
 	return true;
 }
 
+bool ImageProcessor::createMultiFuzzyContrastSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+
+	memcpy(m_tempB->r, m_ImgB->r, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->g, m_ImgB->g, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->b, m_ImgB->b, BUFSIZE * sizeof(uint8_t));
+
+	if (!m_cuprocess->ApplyMultiFuzzyContrast(m_tempB, m_histoArr))
+	{
+		return false;
+	}
+	createSRV(m_tempB, nullptr, VS_MULTI_FUZZY);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_MULTI_FUZZY], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_MULTI_FUZZY]);
+
+	vsBlob->Release();
+
+	return true;
+}
+
 bool ImageProcessor::createLaplacianSRV(void)
 {
 	ID3DBlob* vsBlob = nullptr;
@@ -328,6 +384,37 @@ bool ImageProcessor::createLaplacianSRV(void)
 
 
 
+
+
+void ImageProcessor::computeHistogram(void)
+{
+	const uint32_t TOTAL_PIXEL = m_ImgB->imgW * m_ImgB->imgH;
+
+	m_rgbHisto = new uint32_t[MAX_PIXEL_VALUE * 3];
+	memset(m_rgbHisto, 0, sizeof(uint32_t) * MAX_PIXEL_VALUE * 3);
+	uint32_t rVal, gVal, bVal;
+
+	for (uint32_t i = 0; i < TOTAL_PIXEL; ++i)
+	{
+		rVal = m_ImgB->r[i];
+		gVal = m_ImgB->g[i];
+		bVal = m_ImgB->b[i];
+
+		++m_rgbHisto[rVal + (MAX_PIXEL_VALUE * 0)];
+		++m_rgbHisto[gVal + (MAX_PIXEL_VALUE * 1)];
+		++m_rgbHisto[bVal + (MAX_PIXEL_VALUE * 2)];
+	}
+
+
+	float sum = 0;
+	for (uint32_t i = 0; i < MAX_PIXEL_VALUE; ++i)
+	{
+		// NOTICE : use REC.601
+
+		sum = (float)(m_rgbHisto[i]) * 0.299f + (float)(m_rgbHisto[i + (MAX_PIXEL_VALUE)]) * 0.587f + (float)(m_rgbHisto[i + MAX_PIXEL_VALUE * 2]) * 0.114f;
+		m_histoArr[i] = (uint32_t)(sum + 0.5f);
+	}
+}
 
 
 

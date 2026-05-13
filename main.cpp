@@ -4,7 +4,6 @@
 #include <iostream>
 
 #include <cstdint>
-
 #include <EASTL/vector.h>
 
 #include "D3DResources.h"
@@ -264,6 +263,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case'L':
             imageProcess.SetVSID(VS_LAPLACIAN);
             imageProcess.SetPSID(PS_LAPLACIAN);
+            break;
+        case'f':
+        case'F':
+            imageProcess.SetVSID(VS_FUZZY_CONTRAST);
+            imageProcess.SetPSID(PS_FUZZY_CONTRAST);
+            break;
+        case'm':
+        case'M':
+            imageProcess.SetVSID(VS_MULTI_FUZZY);
+            imageProcess.SetPSID(PS_MULTI_FUZZY);
             break;
         }
 

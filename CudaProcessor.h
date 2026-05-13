@@ -1,5 +1,6 @@
 #pragma once
 
+
 class CudaProcessor
 {
 public:
@@ -9,11 +10,13 @@ public:
 
 	bool Initialize(void);
 
-	bool ComputeHistogram(RAWImageBuf_s*& inBuf, uint32_t*& outHisto);
 	bool ApplyBlur(RAWImageBuf_s*& ioBuf);
+	bool ApplyFuzzyContrast(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
 	bool ApplyEqualize(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
 	bool ApplyColorMap(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
 	bool ApplyLaplacian(RAWImageBuf_s*& ioBuf);
+	bool ApplyMultiFuzzyContrast(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
+	bool ApplyFourier(RAWImageBuf_s*& ioBuf);
 
 	void CloseCudaHandles(void);
 
@@ -30,15 +33,15 @@ private:
 
 private:
 	void resetDevBufs(void);
-	void isoDataClustering(uint32_t*& hiso);
+	Cluster_s* isoDataClustering(uint32_t*& histo);
 
+	uint32_t* fuzzyHistogram(uint32_t* inHisto, uint32_t theta);
+	uint32_t calPartitioningLevel(uint32_t*& fuzzyedHisto, uint32_t startIDX, uint32_t range);
 	inline float calCV(uint32_t* histo, uint32_t startIDX, uint32_t length);
 
 private:
-
-	Cluster_s* m_clusters = nullptr;
-
-	uint32_t* m_dHisto = nullptr;
+	uint8_t* m_dLUT = nullptr;
+	uint8_t* m_hLUT = nullptr;
 
 	size_t m_pitch = 0;
 	uint8_t* m_dr = nullptr;

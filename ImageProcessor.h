@@ -11,7 +11,9 @@ enum PixelShaderID_e
 	PS_HISTOGRAM,
 	PS_BLUR,
 	PS_EQUALIZE,
+	PS_FUZZY_CONTRAST,
 	PS_COLOR_MAP,
+	PS_MULTI_FUZZY,
 	PS_LAPLACIAN,
 	PS_SHADER_COUNT,
 	PS_NON
@@ -22,7 +24,9 @@ enum VertexShaderID_e
 	VS_HISTOGRAM,
 	VS_BLUR,
 	VS_EQUALIZE,
+	VS_FUZZY_CONTRAST,
 	VS_COLOR_MAP,
+	VS_MULTI_FUZZY,
 	VS_LAPLACIAN,
 	VS_SHADER_COUNT,
 	VS_NON
@@ -58,13 +62,17 @@ private:
 
 	bool createHistogramSRV(void);
 	bool createEqualizedSRV(void);
+	bool createFuzzyContrastSRV(void);
 	bool createAVGBlurSRV(void);
 	bool createColorMapSRV(void);
+	bool createMultiFuzzyContrastSRV(void);
 	bool createLaplacianSRV(void);
 
 
 	void createSRV(const RAWImageBuf_s* img, uint32_t* histoArr, VertexShaderID_e vsID);
 	void createD3DBuffer(void);
+
+	void computeHistogram(void);
 
 private:
 
@@ -87,6 +95,7 @@ private:
 	CudaProcessor* m_cuprocess = nullptr;
 
 	uint32_t* m_histoArr = nullptr;
+	uint32_t* m_rgbHisto = nullptr;
 	RAWImageBuf_s* m_ImgB;
 	RAWImageBuf_s* m_tempB;
 };

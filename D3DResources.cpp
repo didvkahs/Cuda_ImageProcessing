@@ -299,6 +299,7 @@ ID3D11InputLayout* D3DResources::CreateInputLayout(const D3D11_INPUT_ELEMENT_DES
 
 
 
+
 bool D3DResources::getMaxVideoAdapter(void)
 {
 	IDXGIFactory1* pFactory = nullptr;
