@@ -16,7 +16,7 @@ public:
 	bool ApplyColorMap(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
 	bool ApplyLaplacian(RAWImageBuf_s*& ioBuf);
 	bool ApplyMultiFuzzyContrast(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
-	bool ApplyFourier(RAWImageBuf_s*& ioBuf);
+	bool ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf);
 
 	void CloseCudaHandles(void);
 
@@ -35,6 +35,7 @@ private:
 	void resetDevBufs(void);
 	Cluster_s* isoDataClustering(uint32_t*& histo);
 
+	void logRemap(uint8_t* dstBuf, float* magBuf);
 	uint32_t* fuzzyHistogram(uint32_t* inHisto, uint32_t theta);
 	uint32_t calPartitioningLevel(uint32_t*& fuzzyedHisto, uint32_t startIDX, uint32_t range);
 	inline float calCV(uint32_t* histo, uint32_t startIDX, uint32_t length);

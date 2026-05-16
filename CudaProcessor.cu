@@ -12,7 +12,6 @@
 #include <random>
 
 
-
 #define SAFE_RELEASE(p) {if(p != nullptr){ cudaFree(p); p = nullptr;}}
 
 constexpr int CU_IMG_W = 1024;
@@ -29,11 +28,14 @@ inline bool CudaKernelCheck(void);
 
 __constant__ uint32_t KC_WARP_SIZE = 32;
 __constant__ uint32_t KC_QUATER = 4;
+__constant__ float KC_PI = 3.141592;
 
 __global__ void avgBlur(uint8_t* dstBuf, uint8_t* srcBuf, size_t pich, uint32_t width, uint32_t height);
 __global__ void laplacian(uint8_t* dstBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
 __global__ void replaceWithLUT(uint8_t* LUT, uint8_t* ioBuf, size_t pitch, uint32_t width, uint32_t height);
 __global__ void replaceWithRGBLUT(uint8_t* rgbLUT, uint8_t* r, uint8_t* g, uint8_t* b, size_t pitch, uint32_t width, uint32_t height);
+__global__ void dft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
+
 
 CudaProcessor::CudaProcessor(void) {}
 CudaProcessor::~CudaProcessor(void) {}
@@ -608,6 +610,76 @@ LB_FAILED_MEMCPY_DTOH:
 	return false;
 }
 
+bool CudaProcessor::ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf)
+{
+	resetDevBufs();
+
+	m_imgW = inBuf->imgW;
+	m_imgH = inBuf->imgH;
+
+	const uint32_t BUFFER_SIZE = m_imgW * m_imgH;
+
+	float* hMag = new float[BUFFER_SIZE];
+	float* dMag = nullptr;
+	cudaMalloc(&dMag, sizeof(float) * BUFFER_SIZE);
+
+	uint8_t* rec601 = new uint8_t[BUFFER_SIZE];
+
+	for (uint32_t i = 0; i < BUFFER_SIZE; ++i)
+	{
+		rec601[i] = (uint8_t)((float)inBuf->r[i] * 0.299f + (float)inBuf->g[i] * 0.587f + (float)inBuf->b[i] * 0.114f);
+	}
+
+
+	if (!CudaCheck(cudaMemcpy2D(m_dr, m_pitch, rec601, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
+	{
+		goto LB_FAILED_MEMCPY_HTOD;
+	}
+	
+
+
+	{
+		cudaMemcpy(m_dLUT, m_hLUT, MAX_PIXEL_VAL, cudaMemcpyHostToDevice);
+
+		dim3 block(BLOCK, BLOCK);
+		dim3 grid((m_imgW + BLOCK - 1) / BLOCK, (m_imgH + BLOCK - 1) / BLOCK);
+
+		dft <<<grid, block >>> (dMag, m_dr, m_pitch, m_imgW, m_imgH);
+		
+		if (!CudaKernelCheck())
+		{
+			fprintf(stderr, "ApplyEqualize kernel failed\n");
+			goto LB_FAILED_KERNEL;
+		}
+	}
+
+	if (!CudaCheck(cudaMemcpy(hMag, dMag, sizeof(float) * m_imgW * m_imgH, cudaMemcpyDeviceToHost)))
+	{
+		goto LB_FAILED_MEMCPY_DTOH;
+	}
+
+	logRemap(outBuf->r, hMag);
+	memcpy(outBuf->g, outBuf->r, sizeof(uint8_t) * BUFFER_SIZE);
+	memcpy(outBuf->b, outBuf->r, sizeof(uint8_t) * BUFFER_SIZE);
+
+		delete[] rec601;
+	delete[] hMag;
+	cudaFree(dMag);
+
+	return true;
+
+	LB_FAILED_MEMCPY_DTOH:
+	LB_FAILED_KERNEL:
+	LB_FAILED_MEMCPY_HTOD:
+
+	delete[] rec601;
+	delete[] hMag;
+	cudaFree(dMag);
+
+	return false;
+}
+
+
 
 
 
@@ -689,6 +761,25 @@ CudaProcessor::Cluster_s* CudaProcessor::isoDataClustering(uint32_t*& histo)
 }
 
 
+
+
+
+void CudaProcessor::logRemap(uint8_t* dstBuf, float* magBuf)
+{
+	float maxMag = 0;
+
+	for (int i = 0; i < m_imgW * m_imgH; ++i)
+	{
+		if (maxMag < magBuf[i]) { maxMag = magBuf[i];}
+	}
+
+	float contrast = (float)MAX_PIXEL_VAL / log(1 + maxMag);
+
+	for (int i = 0; i < m_imgW * m_imgH; ++i)
+	{
+		dstBuf[i] = (uint8_t)(contrast * log(1 + magBuf[i]) + 0.5f);
+	}
+}
 
 uint32_t* CudaProcessor::fuzzyHistogram(uint32_t* inHisto, uint32_t theta)
 {
@@ -863,6 +954,35 @@ __global__ void replaceWithRGBLUT(uint8_t* rgbLUT, uint8_t* r, uint8_t* g, uint8
 	b[srcX + pitch * srcY] = rgbLUT[bVal + (256 * 2)];
 }
 
+__global__ void dft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height)
+{
+	const uint32_t u = blockIdx.x * blockDim.x + threadIdx.x;
+	const uint32_t v = blockIdx.y * blockDim.y + threadIdx.y;
+
+	if (u >= width || v >= height) return;
+
+	
+	float theta;
+	uint8_t pixel;
+
+	float realNum = 0;
+	float imgNum = 0;
+
+	for (uint32_t y = 0; y < height; ++y)
+	{
+		for (uint32_t x = 0; x < width; ++x)
+		{
+			pixel = srcBuf[x + pitch * y];
+			theta = 2 * (((float)u * x / width) + ((float)v * y / height));
+
+			realNum += (float)pixel * cospif(theta);
+			imgNum -= (float)pixel * sinpif(theta);
+		}
+	}
+
+	float sum = realNum * realNum + imgNum * imgNum;
+	magBuf[u + width * v] = sqrtf(sum);
+}
 
 
 

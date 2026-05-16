@@ -15,6 +15,7 @@ enum PixelShaderID_e
 	PS_COLOR_MAP,
 	PS_MULTI_FUZZY,
 	PS_LAPLACIAN,
+	PS_FOURIER_DFT,
 	PS_SHADER_COUNT,
 	PS_NON
 };
@@ -28,6 +29,7 @@ enum VertexShaderID_e
 	VS_COLOR_MAP,
 	VS_MULTI_FUZZY,
 	VS_LAPLACIAN,
+	VS_FOURIER_DFT,
 	VS_SHADER_COUNT,
 	VS_NON
 };
@@ -67,6 +69,7 @@ private:
 	bool createColorMapSRV(void);
 	bool createMultiFuzzyContrastSRV(void);
 	bool createLaplacianSRV(void);
+	bool createDFTSRV(void);
 
 
 	void createSRV(const RAWImageBuf_s* img, uint32_t* histoArr, VertexShaderID_e vsID);

@@ -88,6 +88,12 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 		goto LB_FAILED_CREATE_MULTI_FUZZY_CONTRAST;
 	}
 
+	if (!createDFTSRV())
+	{
+		fprintf(stderr, "createDFTSRV failed\n");
+		goto LB_FAILED_CREATE_DFT;
+	}
+
 	if (!createLaplacianSRV())
 	{
 		fprintf(stderr, "createLaplacianSRV failed\n");
@@ -109,6 +115,9 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 	return true;
 
 	LB_FAILED_CREATE_LAPLACIAN:
+	SAFE_RELEASE(m_SRVs[VS_FOURIER_DFT])
+
+	LB_FAILED_CREATE_DFT:
 	SAFE_RELEASE(m_SRVs[VS_MULTI_FUZZY])
 
 	LB_FAILED_CREATE_MULTI_FUZZY_CONTRAST:
@@ -352,6 +361,24 @@ bool ImageProcessor::createMultiFuzzyContrastSRV(void)
 	createSRV(m_tempB, nullptr, VS_MULTI_FUZZY);
 	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_MULTI_FUZZY], vsBlob);
 	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_MULTI_FUZZY]);
+
+	vsBlob->Release();
+
+	return true;
+}
+
+bool ImageProcessor::createDFTSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+
+	if (!m_cuprocess->ApplyDFT(m_ImgB, m_tempB))
+	{
+		return false;
+	}
+	createSRV(m_tempB, nullptr, VS_FOURIER_DFT);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_FOURIER_DFT], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_FOURIER_DFT]);
 
 	vsBlob->Release();
 
