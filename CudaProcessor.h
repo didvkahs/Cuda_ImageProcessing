@@ -17,6 +17,7 @@ public:
 	bool ApplyLaplacian(RAWImageBuf_s*& ioBuf);
 	bool ApplyMultiFuzzyContrast(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
 	bool ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf);
+	bool ApplyHough(RAWImageBuf_s*& ioBuf);
 
 	void CloseCudaHandles(void);
 

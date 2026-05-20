@@ -14,8 +14,8 @@
 
 #define SAFE_RELEASE(p) {if(p != nullptr){ cudaFree(p); p = nullptr;}}
 
-constexpr int CU_IMG_W = 1024;
-constexpr int CU_IMG_H = 1024;
+constexpr int CU_IMG_W = 2048;
+constexpr int CU_IMG_H = 2048;
 constexpr uint32_t MAX_PIXEL_VAL = 256;
 
 constexpr int BLUR_RADIUS = 2;
@@ -29,12 +29,16 @@ inline bool CudaKernelCheck(void);
 __constant__ uint32_t KC_WARP_SIZE = 32;
 __constant__ uint32_t KC_QUATER = 4;
 __constant__ float KC_PI = 3.141592;
+__constant__ uint32_t KC_ANGLE = 180;
 
 __global__ void avgBlur(uint8_t* dstBuf, uint8_t* srcBuf, size_t pich, uint32_t width, uint32_t height);
 __global__ void laplacian(uint8_t* dstBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
 __global__ void replaceWithLUT(uint8_t* LUT, uint8_t* ioBuf, size_t pitch, uint32_t width, uint32_t height);
 __global__ void replaceWithRGBLUT(uint8_t* rgbLUT, uint8_t* r, uint8_t* g, uint8_t* b, size_t pitch, uint32_t width, uint32_t height);
 __global__ void dft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
+__global__ void hough(uint32_t* acum, uint32_t row, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
+
+
 
 
 CudaProcessor::CudaProcessor(void) {}
@@ -679,6 +683,110 @@ bool CudaProcessor::ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf)
 	return false;
 }
 
+bool CudaProcessor::ApplyHough(RAWImageBuf_s*& ioBuf)
+{
+	resetDevBufs();
+
+	m_imgW = ioBuf->imgW;
+	m_imgH = ioBuf->imgH;
+
+	const float PI = atan(1) * 4;
+
+	static const uint32_t angle = 180;
+	uint32_t row = (uint32_t)(std::sqrt((double)(m_imgW * m_imgW + m_imgH * m_imgH)) + 0.5);
+	
+	static const uint32_t acumHeight = row * 2;
+	uint32_t* hAcum = new uint32_t[acumHeight * angle];
+	uint32_t* dAcum = nullptr;
+
+	cudaMalloc(&dAcum, sizeof(uint32_t) * (acumHeight * angle));
+	cudaMemset(dAcum, 0, sizeof(uint32_t) * (acumHeight * angle));
+
+	dim3 block(BLOCK, BLOCK);
+	dim3 grid((m_imgW + BLOCK - 1) / BLOCK, (m_imgH + BLOCK - 1) / BLOCK);
+
+	if (!CudaCheck(cudaMemcpy2D(m_dr, m_pitch, ioBuf->r, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
+	{
+		goto LB_FAILED_MEMCPY_HTOD;
+	}
+
+	hough<<<grid, block>>>(dAcum, row, m_dr, m_pitch, m_imgW, m_imgH);
+	
+	if (!CudaKernelCheck())
+	{
+		fprintf(stderr, "ApplyEqualize kernel failed\n");
+		goto LB_FAILED_KERNEL;
+	}
+
+	cudaMemcpy(hAcum, dAcum, sizeof(uint32_t) * (acumHeight * angle), cudaMemcpyDeviceToHost);
+
+	{
+		static const uint32_t threshold = 100;
+
+		for (uint32_t y = 0; y < acumHeight; ++y)
+		{
+			for (uint32_t x = 0; x < angle; ++x)
+			{
+				if (hAcum[x + y * angle] < threshold) continue;
+
+				float theta = x * PI / angle;
+
+				float gX = (float)abs((int32_t)y - (int32_t)row) * cosf(theta);
+				float gY = (float)abs((int32_t)y - (int32_t)row) *sinf(theta);
+				float m = gY / gX;
+
+				int32_t x0 = gX + 2000 * -sinf(theta);
+				int32_t y0 = gY + 2000 * cosf(theta);
+				int32_t x1 = gX + -2000* -sinf(theta);
+				int32_t y1 = gY + -2000* cosf(theta);
+
+				int32_t dx = (int32_t)abs(x1 - x0);
+				int32_t dy = (int32_t)abs(y1 - y0);
+				int32_t sx = (x1 > x0) ? 1 : -1;
+				int32_t sy = (y1 > y0) ? 1 : -1;
+
+				int32_t d = dx - dy;
+				int32_t e2;
+
+				while(1)
+				{
+					if (x0 >= 0 && y0 >= 0 && x0 <= m_imgW && y0 <= m_imgH)
+					{
+						ioBuf->r[x0 + y0 * m_imgW] = 255;
+						ioBuf->g[x0 + y0 * m_imgW] = 255;
+						ioBuf->b[x0 + y0 * m_imgW] = 0;
+					}
+					e2 = d * 2;
+
+					if (x0 == x1 && y1 == y0) break;
+
+					if (e2 >= -dy)
+					{
+						d -= dy;
+						x0 += sx;
+					}
+					if (e2 <= dx)
+					{
+						d += dx;
+						y0 += sy;
+					 }
+				}
+			}
+		}
+	}
+
+	delete[] hAcum;
+	cudaFree(dAcum);
+	return true;
+
+LB_FAILED_KERNEL:
+LB_FAILED_MEMCPY_HTOD:
+	delete[] hAcum;
+	cudaFree(dAcum);
+
+	return false;
+}
+
 
 
 
@@ -982,6 +1090,28 @@ __global__ void dft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width
 
 	float sum = realNum * realNum + imgNum * imgNum;
 	magBuf[u + width * v] = sqrtf(sum);
+}
+
+__global__ void hough(uint32_t* acum, uint32_t row, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height)
+{
+	const uint32_t srcX = blockIdx.x * blockDim.x + threadIdx.x;
+	const uint32_t srcY = blockIdx.y * blockDim.y + threadIdx.y;
+
+	if (srcX >= width || srcY >= height) return;
+
+	uint32_t pixel = srcBuf[srcX + pitch * srcY];
+
+	if (pixel != 255) return;
+
+	int32_t p;
+	float angle;
+
+	for (uint32_t i = 0; i <= KC_ANGLE; ++i)
+	{
+		angle = (float)i / (float)KC_ANGLE;
+		p = (int32_t)(srcX * cospif(angle) + srcY * sinpif(angle) + 0.5f) ;
+		atomicAdd(&acum[(p + row) * KC_ANGLE + i], 1);
+	}
 }
 
 

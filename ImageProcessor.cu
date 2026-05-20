@@ -88,16 +88,22 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 		goto LB_FAILED_CREATE_MULTI_FUZZY_CONTRAST;
 	}
 
-	if (!createDFTSRV())
+	/*if (!createDFTSRV())
 	{
 		fprintf(stderr, "createDFTSRV failed\n");
 		goto LB_FAILED_CREATE_DFT;
-	}
+	}*/
 
 	if (!createLaplacianSRV())
 	{
 		fprintf(stderr, "createLaplacianSRV failed\n");
 		goto LB_FAILED_CREATE_LAPLACIAN;
+	}
+
+	if (!createHoughSRV())
+	{
+		fprintf(stderr, "createHoughSRV failed\n");
+		goto LB_FAILED_CREATE_HOUGH;
 	}
 
 	{
@@ -113,6 +119,9 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 	}
 
 	return true;
+
+	LB_FAILED_CREATE_HOUGH:
+	SAFE_RELEASE(m_SRVs[VS_LAPLACIAN])
 
 	LB_FAILED_CREATE_LAPLACIAN:
 	SAFE_RELEASE(m_SRVs[VS_FOURIER_DFT])
@@ -390,17 +399,29 @@ bool ImageProcessor::createLaplacianSRV(void)
 	ID3DBlob* vsBlob = nullptr;
 	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
 
-	memcpy(m_tempB->r, m_ImgB->r, BUFSIZE * sizeof(uint8_t));
-	memcpy(m_tempB->g, m_ImgB->g, BUFSIZE * sizeof(uint8_t));
-	memcpy(m_tempB->b, m_ImgB->b, BUFSIZE * sizeof(uint8_t));
-
-	if (!m_cuprocess->ApplyLaplacian(m_tempB))
+	if (!m_cuprocess->ApplyLaplacian(m_ImgB))
 	{
 		return false;
 	}
-	createSRV(m_tempB, nullptr, VS_LAPLACIAN);
+	createSRV(m_ImgB, nullptr, VS_LAPLACIAN);
 	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_LAPLACIAN], vsBlob);
 	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_LAPLACIAN]);
+
+	return true;
+}
+
+bool ImageProcessor::createHoughSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+
+	if (!m_cuprocess->ApplyHough(m_ImgB))
+	{
+		return false;
+	}
+	createSRV(m_ImgB, nullptr, VS_HOUGH);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_HOUGH], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_HOUGH]);
 
 	return true;
 }
