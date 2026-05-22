@@ -23,7 +23,7 @@ namespace Bmp
 	{
 		bool result = false;
 
-		std::ifstream file("./highWay1.bmp", std::ios::binary);
+		std::ifstream file("./lena_gray_512.bmp", std::ios::binary);
 
 		if (!file)
 		{

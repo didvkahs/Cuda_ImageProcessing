@@ -16,7 +16,9 @@ public:
 	bool ApplyColorMap(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
 	bool ApplyLaplacian(RAWImageBuf_s*& ioBuf);
 	bool ApplyMultiFuzzyContrast(RAWImageBuf_s*& ioBuf, uint32_t*& inHisto);
-	bool ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf);
+	bool ApplyDFT(uint8_t*& grayBuf, RAWImageBuf_s*& outBuf);
+	bool ApplyFFT(uint8_t*& grayBuf, RAWImageBuf_s*& outBuf);
+	
 	bool ApplyHough(RAWImageBuf_s*& ioBuf);
 
 	void CloseCudaHandles(void);
@@ -42,6 +44,8 @@ private:
 	inline float calCV(uint32_t* histo, uint32_t startIDX, uint32_t length);
 
 private:
+	cudaEvent_t m_start, m_end;
+
 	uint8_t* m_dLUT = nullptr;
 	uint8_t* m_hLUT = nullptr;
 

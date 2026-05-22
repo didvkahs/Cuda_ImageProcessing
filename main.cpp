@@ -284,6 +284,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             imageProcess.SetVSID(VS_HOUGH);
             imageProcess.SetPSID(PS_HOUGH);
             break;
+        case'w':
+        case'W':
+            imageProcess.SetVSID(VS_FOURIER_FFT);
+            imageProcess.SetPSID(PS_FOURIER_FFT);
+            break;
         }
 
     default:

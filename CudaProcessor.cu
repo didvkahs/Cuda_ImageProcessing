@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+#include <math_constants.h>
 
 #include <iostream>
 #define _USE_MATH_DEFINES
@@ -36,9 +37,8 @@ __global__ void laplacian(uint8_t* dstBuf, uint8_t* srcBuf, size_t pitch, uint32
 __global__ void replaceWithLUT(uint8_t* LUT, uint8_t* ioBuf, size_t pitch, uint32_t width, uint32_t height);
 __global__ void replaceWithRGBLUT(uint8_t* rgbLUT, uint8_t* r, uint8_t* g, uint8_t* b, size_t pitch, uint32_t width, uint32_t height);
 __global__ void dft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
+__global__ void fft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
 __global__ void hough(uint32_t* acum, uint32_t row, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height);
-
-
 
 
 CudaProcessor::CudaProcessor(void) {}
@@ -48,6 +48,9 @@ bool CudaProcessor::Initialize(void)
 {
 	m_hLUT = new uint8_t[MAX_PIXEL_VAL];
 	
+	cudaEventCreate(&m_start);
+	cudaEventCreate(&m_end);
+
 	if (!CudaCheck(cudaMalloc(&m_dLUT, MAX_PIXEL_VAL * sizeof(uint8_t))))
 	{
 		goto LB_FAILED_ALLOC_LUT;
@@ -614,12 +617,12 @@ LB_FAILED_MEMCPY_DTOH:
 	return false;
 }
 
-bool CudaProcessor::ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf)
+bool CudaProcessor::ApplyDFT(uint8_t*& grayBuf, RAWImageBuf_s*& outBuf)
 {
 	resetDevBufs();
 
-	m_imgW = inBuf->imgW;
-	m_imgH = inBuf->imgH;
+	m_imgW = outBuf->imgW;
+	m_imgH = outBuf->imgH;
 
 	const uint32_t BUFFER_SIZE = m_imgW * m_imgH;
 
@@ -627,26 +630,18 @@ bool CudaProcessor::ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf)
 	float* dMag = nullptr;
 	cudaMalloc(&dMag, sizeof(float) * BUFFER_SIZE);
 
-	uint8_t* rec601 = new uint8_t[BUFFER_SIZE];
 
-	for (uint32_t i = 0; i < BUFFER_SIZE; ++i)
-	{
-		rec601[i] = (uint8_t)((float)inBuf->r[i] * 0.299f + (float)inBuf->g[i] * 0.587f + (float)inBuf->b[i] * 0.114f);
-	}
-
-
-	if (!CudaCheck(cudaMemcpy2D(m_dr, m_pitch, rec601, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
+	if (!CudaCheck(cudaMemcpy2D(m_dr, m_pitch, grayBuf, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
 	{
 		goto LB_FAILED_MEMCPY_HTOD;
 	}
-	
 
 
 	{
-		cudaMemcpy(m_dLUT, m_hLUT, MAX_PIXEL_VAL, cudaMemcpyHostToDevice);
-
 		dim3 block(BLOCK, BLOCK);
 		dim3 grid((m_imgW + BLOCK - 1) / BLOCK, (m_imgH + BLOCK - 1) / BLOCK);
+		
+		cudaEventRecord(m_start, 0);
 
 		dft <<<grid, block >>> (dMag, m_dr, m_pitch, m_imgW, m_imgH);
 		
@@ -655,6 +650,13 @@ bool CudaProcessor::ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf)
 			fprintf(stderr, "ApplyEqualize kernel failed\n");
 			goto LB_FAILED_KERNEL;
 		}
+
+		cudaEventRecord(m_end, 0);
+		cudaEventSynchronize(m_end);
+		float time;
+		cudaEventElapsedTime(&time, m_start, m_end);
+
+		std::cout << "DCT Calculation time : " << time / 1000.0f << " seconds\n";
 	}
 
 	if (!CudaCheck(cudaMemcpy(hMag, dMag, sizeof(float) * m_imgW * m_imgH, cudaMemcpyDeviceToHost)))
@@ -666,7 +668,6 @@ bool CudaProcessor::ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf)
 	memcpy(outBuf->g, outBuf->r, sizeof(uint8_t) * BUFFER_SIZE);
 	memcpy(outBuf->b, outBuf->r, sizeof(uint8_t) * BUFFER_SIZE);
 
-		delete[] rec601;
 	delete[] hMag;
 	cudaFree(dMag);
 
@@ -676,9 +677,77 @@ bool CudaProcessor::ApplyDFT(RAWImageBuf_s*& inBuf, RAWImageBuf_s*& outBuf)
 	LB_FAILED_KERNEL:
 	LB_FAILED_MEMCPY_HTOD:
 
-	delete[] rec601;
 	delete[] hMag;
 	cudaFree(dMag);
+
+	return false;
+}
+
+bool CudaProcessor::ApplyFFT(uint8_t*& grayBuf, RAWImageBuf_s*& outBuf)
+{
+	resetDevBufs();
+
+	m_imgW = outBuf->imgW;
+	m_imgH = outBuf->imgH;
+
+	uint32_t halfW = m_imgW >> 1;
+	uint32_t halfH = m_imgH >> 1;
+
+	const uint32_t BUFFSIZE = m_imgW * m_imgH;
+
+	float* hMag = new float[BUFFSIZE];
+	float* dMag = nullptr;
+	cudaMalloc(&dMag, sizeof(float) * BUFFSIZE);
+
+
+	if (!CudaCheck(cudaMemcpy2D(m_dr, m_pitch, grayBuf, sizeof(uint8_t) * m_imgW, sizeof(uint8_t) * m_imgW, m_imgH, cudaMemcpyHostToDevice)))
+	{
+		goto LB_FAILED_MEMCPY_HTOD;
+	}
+
+	{
+		dim3 block(BLOCK, BLOCK);
+		dim3 grid((halfW + BLOCK - 1) / BLOCK, (halfH + BLOCK - 1) / BLOCK);
+
+		cudaEventRecord(m_start, 0);
+
+		fft <<<grid, block >>> (dMag, m_dr, m_pitch, halfW, halfH);
+
+		if (!CudaKernelCheck())
+		{
+			fprintf(stderr, "ApplyEqualize kernel failed\n");
+			goto LB_FAILED_KERNEL;
+		}
+
+		cudaEventRecord(m_end, 0);
+		cudaEventSynchronize(m_end);
+		float time;
+		cudaEventElapsedTime(&time, m_start, m_end);
+
+		std::cout << "FFT Calculation time : " << time / 1000.0f << " seconds\n";
+	}
+
+	if (!CudaCheck(cudaMemcpy(hMag, dMag, sizeof(float) * BUFFSIZE, cudaMemcpyDeviceToHost)))
+	{
+		goto LB_FAILED_MEMCPY_DTOH;
+	}
+
+	logRemap(outBuf->r, hMag);
+	memcpy(outBuf->g, outBuf->r, sizeof(uint8_t) * BUFFSIZE);
+	memcpy(outBuf->b, outBuf->r, sizeof(uint8_t) * BUFFSIZE);
+
+
+	cudaFree(dMag);
+	delete[] hMag;
+
+	return true;
+
+	LB_FAILED_MEMCPY_DTOH:
+	LB_FAILED_KERNEL:
+	LB_FAILED_MEMCPY_HTOD:
+
+	cudaFree(dMag);
+	delete[] hMag;
 
 	return false;
 }
@@ -801,6 +870,11 @@ void CudaProcessor::CloseCudaHandles(void)
 	SAFE_RELEASE(m_dr2)
 	SAFE_RELEASE(m_dg2)
 	SAFE_RELEASE(m_db2)
+
+	SAFE_RELEASE(m_hLUT)
+
+	cudaEventDestroy(m_start);
+	cudaEventDestroy(m_end);
 }
 
 
@@ -1081,15 +1155,99 @@ __global__ void dft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width
 		for (uint32_t x = 0; x < width; ++x)
 		{
 			pixel = srcBuf[x + pitch * y];
-			theta = 2 * (((float)u * x / width) + ((float)v * y / height));
+			theta = CUDART_PI_F * 2 * (((float)u * x / width) + ((float)v * y / height));
 
-			realNum += (float)pixel * cospif(theta);
-			imgNum -= (float)pixel * sinpif(theta);
+			float c, s;
+			__sincosf(theta, &c, &s);
+
+			realNum += pixel * c;
+			imgNum -= pixel * s;
 		}
 	}
 
 	float sum = realNum * realNum + imgNum * imgNum;
 	magBuf[u + width * v] = sqrtf(sum);
+}
+
+__global__ void fft(float* magBuf, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height)
+{
+	const uint32_t u = blockIdx.x * blockDim.x + threadIdx.x;
+	const uint32_t v = blockIdx.y * blockDim.y + threadIdx.y;
+
+	if (u >= width || v >= height) return;
+
+	float fW = (float)width * 2;
+	float fH = (float)height * 2;
+
+	float eeAng, eoAng, oeAng, ooAng;
+	float eeReal = 0, eoReal = 0, oeReal = 0, ooReal = 0;
+	float eeImg = 0, eoImg = 0, oeImg = 0, ooImg = 0;
+
+	float ex, ey, ox, oy;
+	float eec, ees, eoc, eos, oec, oes, ooc, oos;
+	uint8_t eep, eop, oep, oop;
+
+	for (uint32_t y = 0; y < height; ++y)
+	{
+		for (uint32_t x = 0; x < width; ++x)
+		{
+			ex = ((float)u * 2 * x) / fW;
+			ox = ((float)u * (2 * x + 1)) / fW;
+			ey = ((float)v * 2 * y) / fH;
+			oy = ((float)v * (2 * y + 1)) / fH;
+
+			eep = srcBuf[x * 2 + pitch * (2 * y)];
+			eop = srcBuf[x * 2 + pitch * (2 * y + 1)];
+			oep = srcBuf[(x * 2 + 1) + pitch * (2 * y)];
+			oop = srcBuf[(x * 2 + 1) + pitch * (2 * y + 1)];
+
+			eeAng = CUDART_PI_F * 2.0f * (ex + ey);
+			eoAng = CUDART_PI_F * 2.0f * (ex + oy);
+			oeAng = CUDART_PI_F * 2.0f * (ox + ey);
+			ooAng = CUDART_PI_F * 2.0f * (ox + oy);
+
+			__sincosf(eeAng, &eec, &ees);
+			__sincosf(eoAng, &eoc, &eos);
+			__sincosf(oeAng, &oec, &oes);
+			__sincosf(ooAng, &ooc, &oos);
+
+			eeReal += eep * eec;
+			eeImg -= eep * ees;
+
+			eoReal += eop * eoc;
+			eoImg -= eop * eos;
+
+			oeReal += oep * oec;
+			oeImg -= oep * oes;
+
+			ooReal += oop * ooc;
+			ooImg -= oop * oos;
+		}
+	}
+
+	float firstQR = eeReal + eoReal + oeReal + ooReal;
+	float firstQI = eeImg + eoImg + oeImg + ooImg;
+
+	float secondQR = eeReal - oeReal + eoReal - ooReal;
+	float secondQI = eeImg - oeImg + eoImg - ooImg;
+
+	float thirdQR = eeReal + oeReal - eoReal - ooReal;
+	float thirdQI = eeImg + oeImg - eoImg - ooImg;
+
+	float fourthQR = eeReal - oeReal - eoReal + ooReal;
+	float fourthQI = eeImg - oeImg - eoImg + ooImg;
+
+	float firstSum = firstQR * firstQR + firstQI * firstQI;
+	float secondSum = secondQR * secondQR + secondQI * secondQI;
+	float thirdSum = thirdQR * thirdQR + thirdQI * thirdQI;
+	float fourthSum = fourthQR * fourthQR + fourthQI * fourthQI;
+
+	uint32_t fullWidth = width * 2;
+
+	magBuf[u + fullWidth * v] = sqrtf(firstSum);
+	magBuf[u + width + fullWidth * v] = sqrtf(secondSum);
+	magBuf[u + fullWidth * (v + height)] = sqrtf(thirdSum);
+	magBuf[u + width + fullWidth * (v + height)] = sqrtf(fourthSum);
 }
 
 __global__ void hough(uint32_t* acum, uint32_t row, uint8_t* srcBuf, size_t pitch, uint32_t width, uint32_t height)
@@ -1109,7 +1267,11 @@ __global__ void hough(uint32_t* acum, uint32_t row, uint8_t* srcBuf, size_t pitc
 	for (uint32_t i = 0; i <= KC_ANGLE; ++i)
 	{
 		angle = (float)i / (float)KC_ANGLE;
-		p = (int32_t)(srcX * cospif(angle) + srcY * sinpif(angle) + 0.5f) ;
+
+		float c, s;
+		__sincosf(angle, &c, &s);
+
+		p = (int32_t)(srcX * c + srcY * s + 0.5f);
 		atomicAdd(&acum[(p + row) * KC_ANGLE + i], 1);
 	}
 }

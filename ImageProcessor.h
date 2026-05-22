@@ -16,6 +16,7 @@ enum PixelShaderID_e
 	PS_MULTI_FUZZY,
 	PS_LAPLACIAN,
 	PS_FOURIER_DFT,
+	PS_FOURIER_FFT,
 	PS_HOUGH,
 	PS_SHADER_COUNT,
 	PS_NON
@@ -31,6 +32,7 @@ enum VertexShaderID_e
 	VS_MULTI_FUZZY,
 	VS_LAPLACIAN,
 	VS_FOURIER_DFT,
+	VS_FOURIER_FFT,
 	VS_HOUGH,
 	VS_SHADER_COUNT,
 	VS_NON
@@ -72,6 +74,7 @@ private:
 	bool createMultiFuzzyContrastSRV(void);
 	bool createLaplacianSRV(void);
 	bool createDFTSRV(void);
+	bool createFFTSRV(void);
 	bool createHoughSRV(void);
 
 
@@ -99,6 +102,8 @@ private:
 	PixelShaderID_e m_currPSID = PS_NON;
 
 	CudaProcessor* m_cuprocess = nullptr;
+
+	uint8_t* m_rec601 = nullptr;
 
 	uint32_t* m_histoArr = nullptr;
 	uint32_t* m_rgbHisto = nullptr;

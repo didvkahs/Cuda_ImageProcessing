@@ -36,6 +36,12 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 		m_tempB->r = new uint8_t[BUFSIZE];
 		m_tempB->g = new uint8_t[BUFSIZE];
 		m_tempB->b = new uint8_t[BUFSIZE];
+
+		m_rec601 = new uint8_t[BUFSIZE];
+		for (uint32_t i = 0; i < BUFSIZE; ++i)
+		{
+			m_rec601[i] = (uint8_t)((float)m_ImgB->r[i] * 0.299f + (float)m_ImgB->g[i] * 0.587f + (float)m_ImgB->b[i] * 0.114f);
+		}
 	}
 
 
@@ -88,11 +94,17 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 		goto LB_FAILED_CREATE_MULTI_FUZZY_CONTRAST;
 	}
 
-	/*if (!createDFTSRV())
+	if (!createDFTSRV())
 	{
 		fprintf(stderr, "createDFTSRV failed\n");
 		goto LB_FAILED_CREATE_DFT;
-	}*/
+	}
+
+	if (!createFFTSRV())
+	{
+		fprintf(stderr, "createFFTSRV failed\n");
+		goto LB_FAILED_CREATE_FFT;
+	}
 
 	if (!createLaplacianSRV())
 	{
@@ -124,6 +136,9 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 	SAFE_RELEASE(m_SRVs[VS_LAPLACIAN])
 
 	LB_FAILED_CREATE_LAPLACIAN:
+	SAFE_RELEASE(m_SRVs[VS_FOURIER_FFT])
+
+	LB_FAILED_CREATE_FFT:
 	SAFE_RELEASE(m_SRVs[VS_FOURIER_DFT])
 
 	LB_FAILED_CREATE_DFT:
@@ -148,7 +163,8 @@ bool ImageProcessor::Initialize(D3DResources& resource)
 	m_cuprocess->CloseCudaHandles();
 	m_cuprocess = nullptr;
 
-    LB_FAILED_CUDA_INITIALIZE:
+	LB_FAILED_CUDA_INITIALIZE:
+	delete[] m_rec601;
 	delete[] m_tempB->r;
 	m_tempB->r = nullptr;
 	delete[] m_tempB->g;
@@ -255,6 +271,7 @@ void ImageProcessor::CloseImgProcessHandles(void)
 		free(m_ImgB->b);
 	}
 	delete m_ImgB;
+	delete[] m_rec601;
 	delete[] m_histoArr;
 
 	m_cuprocess->CloseCudaHandles();
@@ -381,13 +398,35 @@ bool ImageProcessor::createDFTSRV(void)
 	ID3DBlob* vsBlob = nullptr;
 	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
 
-	if (!m_cuprocess->ApplyDFT(m_ImgB, m_tempB))
+	if (!m_cuprocess->ApplyDFT(m_rec601, m_tempB))
 	{
 		return false;
 	}
 	createSRV(m_tempB, nullptr, VS_FOURIER_DFT);
 	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_FOURIER_DFT], vsBlob);
 	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_FOURIER_DFT]);
+
+	vsBlob->Release();
+
+	return true;
+}
+
+bool ImageProcessor::createFFTSRV(void)
+{
+	ID3DBlob* vsBlob = nullptr;
+	const uint32_t BUFSIZE = m_ImgB->imgW * m_ImgB->imgH;
+
+	memcpy(m_tempB->r, m_ImgB->r, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->g, m_ImgB->g, BUFSIZE * sizeof(uint8_t));
+	memcpy(m_tempB->b, m_ImgB->b, BUFSIZE * sizeof(uint8_t));
+
+	if (!m_cuprocess->ApplyFFT(m_rec601, m_tempB))
+	{
+		return false;
+	}
+	createSRV(m_tempB, nullptr, VS_FOURIER_FFT);
+	m_Resource.AddVertexShader(L"ImageShader.fx", "vsMain", m_vsIDs[VS_FOURIER_FFT], vsBlob);
+	m_Resource.AddPixelShader(L"ImageShader.fx", "psMain", m_psIDs[PS_FOURIER_FFT]);
 
 	vsBlob->Release();
 
